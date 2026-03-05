@@ -162,7 +162,7 @@ func New[Rq, Rp any](spec Spec, typedFn miniapi.TypedHandlerFunc[Rq, Rp]) *Route
 		},
 		reqType: reflect.TypeOf(new(Rq)).Elem(),
 		resType: reflect.TypeOf(new(Rp)).Elem(),
-		binder:  binder.New(binder.DefaultBindingOptions),
+		binder:  binder.New(binder.DefaultConfig()),
 	}
 
 	r.fn = func(c miniapi.Context) {
@@ -233,6 +233,6 @@ func NewWithHandlerFunc(spec Spec, fn miniapi.HandlerFunc) *Route {
 		},
 		reqType: nil,
 		resType: nil,
-		binder:  binder.New(binder.DefaultBindingOptions),
+		binder:  binder.New(binder.DefaultConfig()),
 	}
 }
