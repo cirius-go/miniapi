@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/cirius-go/miniapi"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -21,7 +22,7 @@ func TestRoute(t *testing.T) {
 		}
 
 		builder := NewBuilder(spec, handler)
-		route := builder.Build(nil, nil)
+		route := builder.Build(miniapi.BuildContext{})
 
 		Convey("When accessing basic properties", func() {
 			Convey("It should accurately report the Path", func() {

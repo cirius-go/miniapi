@@ -7,6 +7,9 @@ tasks:
       - mockery --name=Context --dir=. --output=./mocks --outpkg=mocks
       - mockery --name=Binder --dir=. --output=./mocks --outpkg=mocks
       - mockery --name=ErrorEncoder --dir=. --output=./mocks --outpkg=mocks
+      - mockery --name=Route --dir=. --output=./mocks --outpkg=mocks
+      - mockery --name=RouteBuilder --dir=. --output=./mocks --outpkg=mocks
+      - mockery --name=Group --dir=. --output=./mocks --outpkg=mocks
 
   test:
     desc: Run all tests
