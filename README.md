@@ -1,5 +1,7 @@
 # MiniAPI
 
+WARNING (This project is highly developing, please don't use it in any production application.)
+
 MiniAPI is a lightweight, type-safe, and interface-driven API framework for Go 1.25+. It leverages Go generics to provide a developer-friendly experience for defining routes, automatically binding requests, and marshaling responses, while seamlessly integrating with OpenAPI specification generation.
 
 ## Features
