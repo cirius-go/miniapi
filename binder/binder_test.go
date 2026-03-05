@@ -2,6 +2,7 @@ package binder
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"iter"
 	"net/url"
@@ -9,298 +10,762 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cirius-go/miniapi"
-	"github.com/smartystreets/goconvey/convey"
+	"github.com/cirius-go/miniapi/mocks"
+	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/mock"
 )
 
-func TestTypeConversions(t *testing.T) {
-	convey.Convey("Given setPrimitiveValue", t, func() {
-		convey.Convey("It should correctly parse strings", func() {
-			var s string
-			err := setPrimitiveValue(reflect.ValueOf(&s), "hello")
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(s, convey.ShouldEqual, "hello")
+// Test Fixtures
+
+type PrimitiveStruct struct {
+	String string  `path:"str"`
+	Int    int     `query:"int"`
+	Float  float64 `header:"X-Float"`
+	Bool   bool    `query:"bool"`
+}
+
+type SliceStruct struct {
+	Strings []string `query:"strs"`
+	Ints    []int    `header:"X-Ints"`
+}
+
+type PointerStruct struct {
+	String *string `path:"str"`
+	Int    *int    `query:"int"`
+}
+
+type JSONBodyStruct struct {
+	Name string `json:"name"`
+	Age  int    `json:"age"`
+}
+
+type BodyStruct struct {
+	Body JSONBodyStruct
+}
+
+type RawBodyReaderStruct struct {
+	Body io.Reader
+}
+
+type RawBodyByteStruct struct {
+	Body []byte
+}
+
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (n int, err error) {
+	return 0, errors.New("read error")
+}
+
+func (e *errorReader) Close() error {
+	return nil
+}
+
+type errorWriter struct{}
+
+func (e *errorWriter) Write(p []byte) (n int, err error) {
+	return 0, errors.New("write error")
+}
+
+func setupMockContext(ctx *mocks.Context) {
+	u, _ := url.Parse("http://localhost")
+	ctx.On("RequestURL").Return(*u).Maybe()
+	ctx.On("RequestParam", mock.Anything).Return("").Maybe()
+	ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {})).Maybe()
+}
+
+func TestBinder(t *testing.T) {
+	Convey("Given a Binder instance", t, func() {
+		b := New(DefaultConfig())
+		ctx := new(mocks.Context)
+
+		Convey("When mapping path parameters to primitives", func() {
+			req := &PrimitiveStruct{}
+			ctx.On("RequestParam", "str").Return("hello")
+
+			err := b.BindPathParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "String", Tag: "str", FieldIndex: []int{0}},
+			})
+
+			So(err, ShouldBeNil)
+			So(req.String, ShouldEqual, "hello")
 		})
 
-		convey.Convey("It should correctly parse integers", func() {
-			var i int
-			err := setPrimitiveValue(reflect.ValueOf(&i), "42")
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(i, convey.ShouldEqual, 42)
+		Convey("When mapping query parameters", func() {
+			req := &PrimitiveStruct{}
+			u, _ := url.Parse("http://localhost?int=42&bool=true")
+			ctx.On("RequestURL").Return(*u)
+
+			err := b.BindQueryParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Int", Tag: "int", FieldIndex: []int{1}},
+				{Name: "Bool", Tag: "bool", FieldIndex: []int{3}},
+			})
+
+			So(err, ShouldBeNil)
+			So(req.Int, ShouldEqual, 42)
+			So(req.Bool, ShouldBeTrue)
 		})
 
-		convey.Convey("It should correctly parse booleans", func() {
-			var b bool
-			err := setPrimitiveValue(reflect.ValueOf(&b), "true")
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(b, convey.ShouldBeTrue)
+		Convey("When mapping query parameter slices", func() {
+			req := &SliceStruct{}
+			u, _ := url.Parse("http://localhost?strs=a&strs=b")
+			ctx.On("RequestURL").Return(*u)
+
+			err := b.BindQueryParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Strings", Tag: "strs", FieldIndex: []int{0}, IsSlice: true},
+			})
+
+			So(err, ShouldBeNil)
+			So(req.Strings, ShouldResemble, []string{"a", "b"})
 		})
 
-		convey.Convey("It should return ErrTypeMismatch for invalid booleans", func() {
-			var b bool
-			err := setPrimitiveValue(reflect.ValueOf(&b), "notabool")
-			convey.So(err, convey.ShouldNotBeNil)
-			convey.So(err.Error(), convey.ShouldContainSubstring, "type mismatch")
-		})
-	})
-
-	convey.Convey("Given setSliceValue", t, func() {
-		convey.Convey("It should correctly parse a slice of strings", func() {
-			var s []string
-			err := setSliceValue(reflect.ValueOf(&s), []string{"a", "b"})
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(s, convey.ShouldResemble, []string{"a", "b"})
-		})
-
-		convey.Convey("It should correctly parse a slice of ints", func() {
-			var s []int
-			err := setSliceValue(reflect.ValueOf(&s), []string{"1", "2"})
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(s, convey.ShouldResemble, []int{1, 2})
-		})
-	})
-
-	convey.Convey("Given extractStructTags", t, func() {
-		convey.Convey("It should correctly identify tags and Body field", func() {
-			type TestStruct struct {
-				ID    string   `path:"id"`
-				Sort  []string `query:"sort"`
-				Token string   `header:"X-Auth"`
-				Body  struct {
-					Name string
-				}
-				Ignored int
-			}
-
-			pathMeta, queryMeta, headerMeta, bodyIdx := extractStructTags(reflect.TypeOf(TestStruct{}))
-			convey.So(len(pathMeta), convey.ShouldEqual, 1)
-			convey.So(pathMeta[0].Tag, convey.ShouldEqual, "id")
-
-			convey.So(len(queryMeta), convey.ShouldEqual, 1)
-			convey.So(queryMeta[0].Tag, convey.ShouldEqual, "sort")
-			convey.So(queryMeta[0].IsSlice, convey.ShouldBeTrue)
-
-			convey.So(len(headerMeta), convey.ShouldEqual, 1)
-			convey.So(headerMeta[0].Tag, convey.ShouldEqual, "X-Auth")
-
-			convey.So(len(bodyIdx), convey.ShouldEqual, 1)
-		})
-	})
-}
-
-// binderMockContext implements miniapi.Context for testing purposes
-type binderMockContext struct {
-	miniapi.Context // Embed interface to panic on unimplemented methods
-	pathParams      map[string]string
-	queryParams     map[string][]string
-	headers         map[string][]string
-	bodyReader      io.ReadCloser
-	responseHeaders map[string]string
-	responseWriter  *bytes.Buffer
-}
-
-func (m *binderMockContext) ResponseHeader(name string) string {
-	if m.responseHeaders == nil {
-		return ""
-	}
-	return m.responseHeaders[name]
-}
-
-func (m *binderMockContext) SetResponseHeader(name, value string) {
-	if m.responseHeaders == nil {
-		m.responseHeaders = make(map[string]string)
-	}
-	m.responseHeaders[name] = value
-}
-
-func (m *binderMockContext) ResponseBodyWriter() io.Writer {
-	if m.responseWriter == nil {
-		m.responseWriter = new(bytes.Buffer)
-	}
-	return m.responseWriter
-}
-
-func (m *binderMockContext) RequestParam(name string) string {
-	return m.pathParams[name]
-}
-
-func (m *binderMockContext) RequestHeader(name string) string {
-	if vals, ok := m.headers[name]; ok && len(vals) > 0 {
-		return vals[0]
-	}
-	return ""
-}
-
-func (m *binderMockContext) RequestURL() url.URL {
-	u := url.URL{}
-	q := u.Query()
-	for k, vals := range m.queryParams {
-		for _, v := range vals {
-			q.Add(k, v)
-		}
-	}
-	u.RawQuery = q.Encode()
-	return u
-}
-
-func (m *binderMockContext) IterRequestHeader() iter.Seq2[string, string] {
-	return func(yield func(string, string) bool) {
-		for k, vals := range m.headers {
-			for _, v := range vals {
-				if !yield(k, v) {
+		Convey("When mapping header parameters", func() {
+			req := &PrimitiveStruct{}
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				if !yield("X-Float", "3.14") {
 					return
 				}
-			}
-		}
-	}
-}
+			}))
 
-func (m *binderMockContext) RequestBodyReader() io.ReadCloser {
-	return m.bodyReader
-}
+			err := b.BindHeaderParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Float", Tag: "X-Float", FieldIndex: []int{2}},
+			})
 
-func TestBindRequest(t *testing.T) {
-	convey.Convey("Given BindRequest", t, func() {
-		convey.Convey("It should bind path, query, header, and JSON body correctly", func() {
-			type TestReq struct {
-				ID   string   `path:"id"`
-				Age  int      `query:"age"`
-				Tags []string `query:"tags"`
-				Auth string   `header:"Authorization"`
-				Body struct {
-					Name string `json:"name"`
+			So(err, ShouldBeNil)
+			So(req.Float, ShouldEqual, 3.14)
+		})
+
+		Convey("When mapping header parameter slices", func() {
+			req := &SliceStruct{}
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				if !yield("X-Ints", "1") {
+					return
+				}
+				if !yield("X-Ints", "2") {
+					return
+				}
+			}))
+
+			err := b.BindHeaderParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Ints", Tag: "X-Ints", FieldIndex: []int{1}, IsSlice: true},
+			})
+
+			So(err, ShouldBeNil)
+			So(req.Ints, ShouldResemble, []int{1, 2})
+		})
+
+		Convey("When mapping JSON body", func() {
+			req := &BodyStruct{}
+			bodyJSON := `{"name":"John","age":30}`
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(bodyJSON)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+
+			So(err, ShouldBeNil)
+			So(req.Body.Name, ShouldEqual, "John")
+			So(req.Body.Age, ShouldEqual, 30)
+		})
+
+		Convey("When mapping to pointer fields", func() {
+			req := &PointerStruct{}
+			ctx.On("RequestParam", "str").Return("ptr_hello")
+			u, _ := url.Parse("http://localhost?int=100")
+			ctx.On("RequestURL").Return(*u)
+
+			err := b.BindPathParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "String", Tag: "str", FieldIndex: []int{0}},
+			})
+			So(err, ShouldBeNil)
+			So(*req.String, ShouldEqual, "ptr_hello")
+
+			err = b.BindQueryParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Int", Tag: "int", FieldIndex: []int{1}},
+			})
+			So(err, ShouldBeNil)
+			So(*req.Int, ShouldEqual, 100)
+		})
+
+		Convey("When mapping request body to io.Reader", func() {
+			req := &RawBodyReaderStruct{}
+			bodyContent := "raw data"
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(bodyContent)))
+
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+
+			So(err, ShouldBeNil)
+			data, _ := io.ReadAll(req.Body)
+			So(string(data), ShouldEqual, bodyContent)
+		})
+
+		Convey("When mapping request body to []byte", func() {
+			req := &RawBodyByteStruct{}
+			bodyContent := "byte data"
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(bodyContent)))
+
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+
+			So(err, ShouldBeNil)
+			So(string(req.Body), ShouldEqual, bodyContent)
+		})
+
+		Convey("When mapping missing values", func() {
+			req := &PrimitiveStruct{String: "original", Int: 42}
+			ctx.On("RequestParam", "str").Return("")
+			u, _ := url.Parse("http://localhost")
+			ctx.On("RequestURL").Return(*u)
+
+			err := b.BindPathParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "String", Tag: "str", FieldIndex: []int{0}},
+			})
+			So(err, ShouldBeNil)
+			So(req.String, ShouldEqual, "original")
+
+			err = b.BindQueryParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Int", Tag: "int", FieldIndex: []int{1}},
+			})
+			So(err, ShouldBeNil)
+			So(req.Int, ShouldEqual, 42)
+		})
+
+		Convey("When mapping invalid primitive types", func() {
+			req := &PrimitiveStruct{}
+			u, _ := url.Parse("http://localhost?int=abc")
+			ctx.On("RequestURL").Return(*u)
+
+			err := b.BindQueryParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Int", Tag: "int", FieldIndex: []int{1}},
+			})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrTypeMismatch), ShouldBeTrue)
+		})
+
+		Convey("When body exceeds MaxBodySize", func() {
+			cfg := DefaultConfig()
+			cfg.MaxBodySize = 5
+			b2 := New(cfg)
+
+			req := &RawBodyByteStruct{}
+			bodyContent := "too long body"
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(bodyContent)))
+
+			err := b2.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrPayloadTooLarge), ShouldBeTrue)
+		})
+
+		Convey("When JSON body is malformed", func() {
+			req := &BodyStruct{}
+			bodyJSON := `{"name":"John", "age": "not-an-int"}`
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(bodyJSON)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+		})
+
+		Convey("When Content-Type is unsupported", func() {
+			req := &BodyStruct{}
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`{}`)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/xml")
+
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrUnsupportedMediaType), ShouldBeTrue)
+		})
+
+		Convey("When DisallowUnknownFields is enabled", func() {
+			cfg := DefaultConfig()
+			cfg.DisallowUnknownFields = true
+			b2 := New(cfg)
+
+			req := &BodyStruct{}
+			bodyJSON := `{"name":"John", "age": 30, "unknown": "field"}`
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(bodyJSON)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+
+			err := b2.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+		})
+
+		Convey("When req is not a pointer to a struct", func() {
+			err := b.BindRequest(ctx, PrimitiveStruct{})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+
+			str := "not a struct"
+			err = b.BindRequest(ctx, &str)
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+		})
+
+		Convey("When marshaling response to JSON", func() {
+			res := &JSONBodyStruct{Name: "Alice", Age: 25}
+			ctx.On("RequestHeader", "Accept").Return("application/json")
+			ctx.On("ResponseHeader", "Content-Type").Return("")
+			ctx.On("SetResponseHeader", "Content-Type", "application/json")
+
+			var buf bytes.Buffer
+			ctx.On("ResponseBodyWriter").Return(&buf)
+
+			err := b.MarshalResponse(ctx, res)
+			So(err, ShouldBeNil)
+			So(buf.String(), ShouldEqual, `{"name":"Alice","age":25}`+"\n")
+		})
+
+		Convey("When marshaling response to text/plain", func() {
+			ctx.On("RequestHeader", "Accept").Return("text/plain")
+			ctx.On("ResponseHeader", "Content-Type").Return("")
+			ctx.On("SetResponseHeader", "Content-Type", "text/plain")
+
+			Convey("Given a string", func() {
+				res := "plain text"
+				var buf bytes.Buffer
+				ctx.On("ResponseBodyWriter").Return(&buf)
+
+				err := b.MarshalResponse(ctx, res)
+				So(err, ShouldBeNil)
+				So(buf.String(), ShouldEqual, "plain text")
+			})
+
+			Convey("Given a pointer to a string", func() {
+				s := "ptr text"
+				res := &s
+				var buf bytes.Buffer
+				ctx.On("ResponseBodyWriter").Return(&buf)
+
+				err := b.MarshalResponse(ctx, res)
+				So(err, ShouldBeNil)
+				So(buf.String(), ShouldEqual, "ptr text")
+			})
+
+			Convey("Given other type", func() {
+				res := 123
+				var buf bytes.Buffer
+				ctx.On("ResponseBodyWriter").Return(&buf)
+
+				err := b.MarshalResponse(ctx, res)
+				So(err, ShouldBeNil)
+				So(buf.String(), ShouldEqual, "123")
+			})
+		})
+
+		Convey("When no Accept header is present", func() {
+			res := &JSONBodyStruct{Name: "Default", Age: 0}
+			ctx.On("RequestHeader", "Accept").Return("")
+			ctx.On("ResponseHeader", "Content-Type").Return("")
+			ctx.On("SetResponseHeader", "Content-Type", "application/json")
+
+			var buf bytes.Buffer
+			ctx.On("ResponseBodyWriter").Return(&buf)
+
+			err := b.MarshalResponse(ctx, res)
+			So(err, ShouldBeNil)
+			So(buf.String(), ShouldEqual, `{"name":"Default","age":0}`+"\n")
+		})
+
+		Convey("When response is nil", func() {
+			err := b.MarshalResponse(ctx, nil)
+			So(err, ShouldBeNil)
+		})
+
+		Convey("When using BindRequest for full struct binding", func() {
+			type FullStruct struct {
+				Path   string  `path:"p"`
+				Query  int     `query:"q"`
+				Header float64 `header:"h"`
+				Body   struct {
+					Foo string `json:"foo"`
 				}
 			}
+			req := &FullStruct{}
 
-			body := strings.NewReader(`{"name":"test user"}`)
-			ctx := &binderMockContext{
-				pathParams:  map[string]string{"id": "123"},
-				queryParams: map[string][]string{"age": {"25"}, "tags": {"go", "api"}},
-				headers:     map[string][]string{"Authorization": {"Bearer token"}},
-				bodyReader:  io.NopCloser(body),
+			ctx.On("RequestParam", "p").Return("p_val")
+
+			u, _ := url.Parse("http://localhost?q=123")
+			ctx.On("RequestURL").Return(*u)
+
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				_ = yield("h", "1.23")
+			}))
+
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`{"foo":"bar"}`)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+
+			err := b.BindRequest(ctx, req)
+			So(err, ShouldBeNil)
+			So(req.Path, ShouldEqual, "p_val")
+			So(req.Query, ShouldEqual, 123)
+			So(req.Header, ShouldEqual, 1.23)
+			So(req.Body.Foo, ShouldEqual, "bar")
+		})
+
+		Convey("When mapping all primitive types", func() {
+			type AllPrimitives struct {
+				Int8    int8    `query:"i8"`
+				Int16   int16   `query:"i16"`
+				Int32   int32   `query:"i32"`
+				Int64   int64   `query:"i64"`
+				Uint    uint    `query:"u"`
+				Uint8   uint8   `query:"u8"`
+				Uint16  uint16  `query:"u16"`
+				Uint32  uint32  `query:"u32"`
+				Uint64  uint64  `query:"u64"`
+				Float32 float32 `query:"f32"`
 			}
+			req := &AllPrimitives{}
+			u, _ := url.Parse("http://localhost?i8=8&i16=16&i32=32&i64=64&u=1&u8=8&u16=16&u32=32&u64=64&f32=0.5")
+			ctx.On("RequestURL").Return(*u)
 
-			var req TestReq
-			binder := New(DefaultBindingOptions)
-			err := binder.BindRequest(ctx, &req)
-			convey.So(err, convey.ShouldBeNil)
-
-			convey.So(req.ID, convey.ShouldEqual, "123")
-			convey.So(req.Age, convey.ShouldEqual, 25)
-			convey.So(req.Tags, convey.ShouldResemble, []string{"go", "api"})
-			convey.So(req.Auth, convey.ShouldEqual, "Bearer token")
-			convey.So(req.Body.Name, convey.ShouldEqual, "test user")
-		})
-	})
-}
-
-func TestMarshalResponse(t *testing.T) {
-	convey.Convey("Given marshalResponse", t, func() {
-		convey.Convey("It should correctly marshal to JSON and set Content-Type", func() {
-			ctx := &binderMockContext{}
-			res := struct {
-				Message string `json:"message"`
-			}{Message: "success"}
-
-			binder := New(DefaultBindingOptions)
-			err := binder.MarshalResponse(ctx, &res)
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(ctx.ResponseHeader("Content-Type"), convey.ShouldEqual, "application/json")
-			convey.So(ctx.responseWriter.String(), convey.ShouldContainSubstring, `{"message":"success"}`)
+			err := b.BindRequest(ctx, req)
+			So(err, ShouldBeNil)
+			So(req.Int8, ShouldEqual, 8)
+			So(req.Int16, ShouldEqual, 16)
+			So(req.Int32, ShouldEqual, 32)
+			So(req.Int64, ShouldEqual, 64)
+			So(req.Uint, ShouldEqual, 1)
+			So(req.Uint8, ShouldEqual, 8)
+			So(req.Uint16, ShouldEqual, 16)
+			So(req.Uint32, ShouldEqual, 32)
+			So(req.Uint64, ShouldEqual, 64)
+			So(req.Float32, ShouldEqual, 0.5)
 		})
 
-		convey.Convey("It should not overwrite an existing Content-Type", func() {
-			ctx := &binderMockContext{}
-			ctx.SetResponseHeader("Content-Type", "application/custom+json")
-			res := struct {
-				Message string `json:"message"`
-			}{Message: "success"}
-
-			binder := New(DefaultBindingOptions)
-			err := binder.MarshalResponse(ctx, &res)
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(ctx.ResponseHeader("Content-Type"), convey.ShouldEqual, "application/custom+json")
+		Convey("When BindRequest fails in path params", func() {
+			// To trigger error in SetPrimitiveValue we need invalid type
+			// But path parameters are usually strings.
+			// Wait, let's use Int in path if possible.
+			type IntPath struct {
+				Int int `path:"i"`
+			}
+			req2 := &IntPath{}
+			ctx.On("RequestParam", "i").Return("abc")
+			err := b.BindRequest(ctx, req2)
+			So(err, ShouldNotBeNil)
 		})
 
-		convey.Convey("It should return nil if response is nil", func() {
-			ctx := &binderMockContext{}
-			binder := New(DefaultBindingOptions)
-			err := binder.MarshalResponse(ctx, nil)
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(ctx.responseWriter, convey.ShouldBeNil)
+		Convey("When BindRequest fails in query params", func() {
+			setupMockContext(ctx)
+			u, _ := url.Parse("http://localhost?int=abc")
+			ctx.On("RequestURL").Return(*u).Unset() // Override the one in setupMockContext
+			ctx.On("RequestURL").Return(*u)
+			err := b.BindRequest(ctx, &PrimitiveStruct{})
+			So(err, ShouldNotBeNil)
 		})
-	})
-}
 
-func TestContentNegotiation(t *testing.T) {
-	convey.Convey("Given BindRequest with Content-Type", t, func() {
-		convey.Convey("It should reject unsupported Content-Type", func() {
-			type TestReq struct {
+		Convey("When BindRequest fails in header params", func() {
+			setupMockContext(ctx)
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				_ = yield("X-Float", "abc")
+			})).Unset()
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				_ = yield("X-Float", "abc")
+			}))
+			err := b.BindRequest(ctx, &PrimitiveStruct{})
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("When content negotiation prefers plain text but JSON is also present", func() {
+			ctx.On("RequestHeader", "Accept").Return("text/plain, application/json;q=0.5")
+			ctx.On("ResponseHeader", "Content-Type").Return("")
+			ctx.On("SetResponseHeader", "Content-Type", "text/plain")
+			var buf bytes.Buffer
+			ctx.On("ResponseBodyWriter").Return(&buf)
+			err := b.MarshalResponse(ctx, "hello")
+			So(err, ShouldBeNil)
+			So(buf.String(), ShouldEqual, "hello")
+		})
+
+		Convey("When content negotiation prefers JSON over plain text", func() {
+			ctx.On("RequestHeader", "Accept").Return("application/json, text/plain;q=0.5")
+			ctx.On("ResponseHeader", "Content-Type").Return("")
+			ctx.On("SetResponseHeader", "Content-Type", "application/json")
+			var buf bytes.Buffer
+			ctx.On("ResponseBodyWriter").Return(&buf)
+			err := b.MarshalResponse(ctx, map[string]string{"foo": "bar"})
+			So(err, ShouldBeNil)
+			So(buf.String(), ShouldEqual, `{"foo":"bar"}`+"\n")
+		})
+
+		Convey("When Content-Type is already set in MarshalResponse", func() {
+			ctx.On("RequestHeader", "Accept").Return("application/json")
+			ctx.On("ResponseHeader", "Content-Type").Return("application/json")
+			var buf bytes.Buffer
+			ctx.On("ResponseBodyWriter").Return(&buf)
+			err := b.MarshalResponse(ctx, map[string]string{"foo": "bar"})
+			So(err, ShouldBeNil)
+		})
+
+		Convey("When RequestBodyReader is nil", func() {
+			ctx.On("RequestBodyReader").Return(nil)
+			err := b.BindBody(ctx, reflect.ValueOf(&RawBodyByteStruct{}).Elem(), []int{0})
+			So(err, ShouldBeNil)
+		})
+
+		Convey("When io.ReadAll fails in BindBody for io.Reader", func() {
+			ctx.On("RequestBodyReader").Return(&errorReader{})
+			err := b.BindBody(ctx, reflect.ValueOf(&RawBodyReaderStruct{}).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+		})
+
+		Convey("When io.ReadAll fails in BindBody for []byte", func() {
+			ctx.On("RequestBodyReader").Return(&errorReader{})
+			err := b.BindBody(ctx, reflect.ValueOf(&RawBodyByteStruct{}).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+		})
+
+		Convey("When payload-too-large fails in BindBody for io.Reader", func() {
+			cfg := DefaultConfig()
+			cfg.MaxBodySize = 5
+			b2 := New(cfg)
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader("too long")))
+			err := b2.BindBody(ctx, reflect.ValueOf(&RawBodyReaderStruct{}).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrPayloadTooLarge), ShouldBeTrue)
+		})
+
+		Convey("When Accept header doesn't contain application/json", func() {
+			ctx.On("RequestHeader", "Accept").Return("text/plain")
+			ctx.On("ResponseHeader", "Content-Type").Return("")
+			ctx.On("SetResponseHeader", "Content-Type", "text/plain")
+			var buf bytes.Buffer
+			ctx.On("ResponseBodyWriter").Return(&buf)
+			err := b.MarshalResponse(ctx, "hello")
+			So(err, ShouldBeNil)
+			So(buf.String(), ShouldEqual, "hello")
+		})
+
+		Convey("When Body is a pointer and nil", func() {
+			type PointerBody struct {
+				Body *JSONBodyStruct
+			}
+			req := &PointerBody{}
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`{"name":"test"}`)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldBeNil)
+			So(req.Body, ShouldNotBeNil)
+			So(req.Body.Name, ShouldEqual, "test")
+		})
+
+		Convey("When ResponseBodyWriter fails in MarshalResponse", func() {
+			ctx.On("RequestHeader", "Accept").Return("text/plain")
+			ctx.On("ResponseHeader", "Content-Type").Return("text/plain")
+			ctx.On("ResponseBodyWriter").Return(&errorWriter{})
+			err := b.MarshalResponse(ctx, "hello")
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+		})
+
+		Convey("When JSON encoding fails in MarshalResponse", func() {
+			ctx.On("RequestHeader", "Accept").Return("application/json")
+			ctx.On("ResponseHeader", "Content-Type").Return("application/json")
+			ctx.On("ResponseBodyWriter").Return(&errorWriter{})
+			err := b.MarshalResponse(ctx, map[string]any{"foo": func() {}}) // Non-serializable
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrBindingFailed), ShouldBeTrue)
+		})
+
+		Convey("When header is missing", func() {
+			req := &SliceStruct{}
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				// No headers
+			}))
+			err := b.BindHeaderParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Ints", Tag: "X-Ints", FieldIndex: []int{1}, IsSlice: true},
+			})
+			So(err, ShouldBeNil)
+			So(req.Ints, ShouldBeEmpty)
+		})
+
+		Convey("When header mapping fails for single value", func() {
+			req := &PrimitiveStruct{}
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				_ = yield("X-Float", "abc")
+			}))
+			err := b.BindHeaderParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Float", Tag: "X-Float", FieldIndex: []int{2}},
+			})
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("When query mapping fails for single value", func() {
+			req := &PrimitiveStruct{}
+			u, _ := url.Parse("http://localhost?int=abc")
+			ctx.On("RequestURL").Return(*u)
+			err := b.BindQueryParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Int", Tag: "int", FieldIndex: []int{1}},
+			})
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("When query mapping fails for slice", func() {
+			// Let's use Ints slice in query.
+			type IntsQuery struct {
+				Ints []int `query:"i"`
+			}
+			req2 := &IntsQuery{}
+			u2, _ := url.Parse("http://localhost?i=1&i=abc")
+			ctx.On("RequestURL").Return(*u2)
+			err := b.BindQueryParams(ctx, reflect.ValueOf(req2).Elem(), []StructFieldMeta{
+				{Name: "Ints", Tag: "i", FieldIndex: []int{0}, IsSlice: true},
+			})
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("When header mapping fails for slice", func() {
+			req := &SliceStruct{}
+			ctx.On("IterRequestHeader").Return(iter.Seq2[string, string](func(yield func(string, string) bool) {
+				_ = yield("X-Ints", "abc")
+			}))
+			err := b.BindHeaderParams(ctx, reflect.ValueOf(req).Elem(), []StructFieldMeta{
+				{Name: "Ints", Tag: "X-Ints", FieldIndex: []int{1}, IsSlice: true},
+			})
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("When BindRequest fails in body binding", func() {
+			setupMockContext(ctx)
+			type BodyReq struct {
 				Body struct{ Name string }
 			}
-			ctx := &binderMockContext{
-				headers:    map[string][]string{"Content-Type": {"application/xml"}},
-				bodyReader: io.NopCloser(strings.NewReader(`<name>test</name>`)),
-			}
-			var req TestReq
-			binder := New(DefaultBindingOptions)
-			err := binder.BindRequest(ctx, &req)
-			convey.So(err, convey.ShouldNotBeNil)
-			convey.So(err.Error(), convey.ShouldContainSubstring, "unsupported media type")
-		})
-	})
-
-	convey.Convey("Given marshalResponse with Accept Header", t, func() {
-		convey.Convey("It should output Plain Text if text/plain is requested", func() {
-			ctx := &binderMockContext{
-				headers: map[string][]string{"Accept": {"text/plain"}},
-			}
-			res := "hello plain text"
-			binder := New(DefaultBindingOptions)
-			err := binder.MarshalResponse(ctx, &res)
-			convey.So(err, convey.ShouldBeNil)
-			convey.So(ctx.ResponseHeader("Content-Type"), convey.ShouldEqual, "text/plain")
-			convey.So(ctx.responseWriter.String(), convey.ShouldEqual, "hello plain text")
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`invalid json`)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+			err := b.BindRequest(ctx, &BodyReq{})
+			So(err, ShouldNotBeNil)
 		})
 
-		convey.Convey("It should default to JSON if no Accept header is present", func() {
-			ctx := &binderMockContext{
-				headers: map[string][]string{},
-			}
-			res := struct{ Message string }{Message: "test"}
-			binder := New(DefaultBindingOptions)
-			err := binder.MarshalResponse(ctx, &res)
-			convey.So(err, convey.ShouldBeNil)
+		Convey("When payload-too-large fails in BindBody for []byte", func() {
+			cfg := DefaultConfig()
+			cfg.MaxBodySize = 5
+			b2 := New(cfg)
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader("too long")))
+			err := b2.BindBody(ctx, reflect.ValueOf(&RawBodyByteStruct{}).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrPayloadTooLarge), ShouldBeTrue)
+		})
+
+		Convey("When payload-too-large fails in BindBody for JSON", func() {
+			cfg := DefaultConfig()
+			cfg.MaxBodySize = 5
+			b2 := New(cfg)
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`{"name":"too long"}`)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+			err := b2.BindBody(ctx, reflect.ValueOf(&BodyStruct{}).Elem(), []int{0})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrPayloadTooLarge), ShouldBeTrue)
+		})
+
+		Convey("When JSON body is empty (EOF)", func() {
+			req := &BodyStruct{}
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(``)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldBeNil)
+		})
+
+		Convey("When MaxBodySize is zero or negative", func() {
+			cfg := DefaultConfig()
+			cfg.MaxBodySize = 0
+			b2 := New(cfg)
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`{}`)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json")
+			err := b2.BindBody(ctx, reflect.ValueOf(&BodyStruct{}).Elem(), []int{0})
+			So(err, ShouldBeNil)
+		})
+
+		Convey("When Content-Type has charset", func() {
+			req := &BodyStruct{}
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`{"name":"test"}`)))
+			ctx.On("RequestHeader", "Content-Type").Return("application/json; charset=utf-8")
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldBeNil)
+			So(req.Body.Name, ShouldEqual, "test")
+		})
+
+		Convey("When Content-Type is empty", func() {
+			req := &BodyStruct{}
+			ctx.On("RequestBodyReader").Return(io.NopCloser(strings.NewReader(`{"name":"test"}`)))
+			ctx.On("RequestHeader", "Content-Type").Return("")
+			err := b.BindBody(ctx, reflect.ValueOf(req).Elem(), []int{0})
+			So(err, ShouldBeNil)
+			So(req.Body.Name, ShouldEqual, "test")
 		})
 	})
 }
 
-func BenchmarkBindRequest(b *testing.B) {
-	type TestReq struct {
-		ID   string   `path:"id"`
-		Age  int      `query:"age"`
-		Tags []string `query:"tags"`
-		Auth string   `header:"Authorization"`
-		Body struct {
-			Name string `json:"name"`
-		}
-	}
+func TestBinderInternal(t *testing.T) {
+	Convey("Given internal binder helpers", t, func() {
+		Convey("SetPrimitiveValue with unsupported types", func() {
+			v := reflect.ValueOf(struct{}{})
+			err := SetPrimitiveValue(v, "val")
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrTypeMismatch), ShouldBeTrue)
+		})
 
-	bodyData := `{"name":"benchmark test"}`
+		Convey("SetSliceValue with non-slice target", func() {
+			var i int
+			err := SetSliceValue(reflect.ValueOf(&i).Elem(), []string{"1"})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrTypeMismatch), ShouldBeTrue)
+		})
 
-	b.ReportAllocs()
+		Convey("SetSliceValue with primitive conversion error", func() {
+			var is []int
+			err := SetSliceValue(reflect.ValueOf(&is).Elem(), []string{"abc"})
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrTypeMismatch), ShouldBeTrue)
+		})
 
-	for b.Loop() {
-		// Re-create context for each run to simulate real requests and avoid EOF on body
-		ctx := &binderMockContext{
-			pathParams:  map[string]string{"id": "123"},
-			queryParams: map[string][]string{"age": {"25"}, "tags": {"go", "api"}},
-			headers:     map[string][]string{"Authorization": {"Bearer token"}, "Content-Type": {"application/json"}},
-			bodyReader:  io.NopCloser(strings.NewReader(bodyData)),
-		}
+		Convey("SetSliceValue with pointer to slice", func() {
+			var is *[]int
+			err := SetSliceValue(reflect.ValueOf(&is).Elem(), []string{"1", "2"})
+			So(err, ShouldBeNil)
+			So(*is, ShouldResemble, []int{1, 2})
+		})
 
-		var req TestReq
-		binder := New(DefaultBindingOptions)
-		_ = binder.BindRequest(ctx, &req)
-	}
+		Convey("SetPrimitiveValue with unsigned integer errors", func() {
+			var u uint
+			err := SetPrimitiveValue(reflect.ValueOf(&u).Elem(), "abc")
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrTypeMismatch), ShouldBeTrue)
+		})
+
+		Convey("SetPrimitiveValue with float errors", func() {
+			var f float64
+			err := SetPrimitiveValue(reflect.ValueOf(&f).Elem(), "abc")
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrTypeMismatch), ShouldBeTrue)
+		})
+
+		Convey("SetPrimitiveValue with bool errors", func() {
+			var b bool
+			err := SetPrimitiveValue(reflect.ValueOf(&b).Elem(), "abc")
+			So(err, ShouldNotBeNil)
+			So(errors.Is(err, ErrTypeMismatch), ShouldBeTrue)
+		})
+
+		Convey("ExtractStructTags with pointer type", func() {
+			type Simple struct {
+				Foo string `query:"f"`
+			}
+			p, _, _, _ := ExtractStructTags(reflect.TypeOf(&Simple{}))
+			So(p, ShouldBeEmpty) // Simple doesn't have path tag
+		})
+
+		Convey("ExtractStructTags with unexported fields", func() {
+			type Unexported struct {
+				foo string `query:"foo"`
+			}
+			p, q, h, b := ExtractStructTags(reflect.TypeOf(Unexported{}))
+			So(p, ShouldBeEmpty)
+			So(q, ShouldBeEmpty)
+			So(h, ShouldBeEmpty)
+			So(b, ShouldBeEmpty)
+		})
+	})
 }

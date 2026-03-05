@@ -13,6 +13,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-24
 - Go 1.25.5 + Standard Library (`reflect`, `encoding/json`, `net/http`, `io`); `github.com/vektra/mockery/v2` (for automated mock generation); `github.com/smartystreets/goconvey/convey` (for testing). (007-binder-interface-mock)
 - Go 1.25.5 + `github.com/getkin/kin-openapi` v0.133.0, `github.com/smartystreets/goconvey/convey` (testing). (008-fix-openapi-duplication)
 - Go (latest supported by project) + `github.com/getkin/kin-openapi` (for documenting security schemes) (001-lib-auth)
+- Go 1.25.5 + Standard library (`net/http`, `reflect`, `encoding/json`, `io`, `strings`), `github.com/smartystreets/goconvey/convey`, `github.com/stretchr/testify` (001-add-binder-tests)
+- Go 1.25.5 + Standard library (`net/http`, `reflect`, `encoding/json`, `io`, `strings`), `github.com/smartystreets/goconvey/convey`, `github.com/vektra/mockery/v2` (for mocks) (001-add-binder-tests)
 
 - Go (latest supported by project) + Minimal standard library dependencies, GoConvey for testing. (001-openapi-extractor)
 
@@ -32,9 +34,9 @@ tests/
 Go (latest supported by project): Follow standard conventions
 
 ## Recent Changes
+- 001-add-binder-tests: Added Go 1.25.5 + Standard library (`net/http`, `reflect`, `encoding/json`, `io`, `strings`), `github.com/smartystreets/goconvey/convey`, `github.com/vektra/mockery/v2` (for mocks)
+- 001-add-binder-tests: Added Go 1.25.5 + Standard library (`net/http`, `reflect`, `encoding/json`, `io`, `strings`), `github.com/smartystreets/goconvey/convey`, `github.com/stretchr/testify`
 - 010-openapi-security-refactor: Added Go (latest supported by project) + `github.com/getkin/kin-openapi`
-- 001-openapi-auth: Added Go (latest supported by project) + `github.com/getkin/kin-openapi`
-- 001-lib-auth: Added Go (latest supported by project) + `github.com/getkin/kin-openapi` (for documenting security schemes)
 
 
 <!-- MANUAL ADDITIONS START -->

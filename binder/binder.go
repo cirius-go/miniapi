@@ -13,49 +13,51 @@ import (
 	"github.com/cirius-go/miniapi"
 )
 
-// BindingOptions configures the behavior of the binding engine.
-type BindingOptions struct {
+// Config configures the behavior of the binding engine.
+type Config struct {
 	MaxBodySize           int64
 	DisallowUnknownFields bool
 }
 
-// DefaultBindingOptions provides sensible defaults for the binding engine.
-var DefaultBindingOptions = BindingOptions{
-	MaxBodySize:           1024 * 1024, // 1MB default
-	DisallowUnknownFields: false,
+// DefaultConfig returns the default configuration for the binder.
+func DefaultConfig() Config {
+	return Config{
+		MaxBodySize:           1024 * 1024, // 1MB default
+		DisallowUnknownFields: false,
+	}
 }
 
-// DefaultBinder is the standard implementation of the miniapi.Binder interface.
-type DefaultBinder struct {
-	Options BindingOptions
+// Binder is the standard implementation of the miniapi.Binder interface.
+type Binder struct {
+	cfg Config
 }
 
 // New returns a new DefaultBinder with the given options.
-func New(opts BindingOptions) *DefaultBinder {
-	return &DefaultBinder{Options: opts}
+func New(cfg Config) *Binder {
+	return &Binder{cfg: cfg}
 }
 
 // BindRequest parses path, query, header, and body parameters into the given struct req.
-func (b *DefaultBinder) BindRequest(ctx miniapi.Context, req any) error {
+func (b *Binder) BindRequest(ctx miniapi.Context, req any) error {
 	rv := reflect.ValueOf(req)
 	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("%w: req must be a pointer to a struct", ErrBindingFailed)
 	}
 
 	rv = rv.Elem()
-	pathMeta, queryMeta, headerMeta, bodyIndex := extractStructTags(rv.Type())
+	pathMeta, queryMeta, headerMeta, bodyIndex := ExtractStructTags(rv.Type())
 
-	if err := bindPathParams(ctx, rv, pathMeta); err != nil {
+	if err := b.BindPathParams(ctx, rv, pathMeta); err != nil {
 		return err
 	}
-	if err := bindQueryParams(ctx, rv, queryMeta); err != nil {
+	if err := b.BindQueryParams(ctx, rv, queryMeta); err != nil {
 		return err
 	}
-	if err := bindHeaderParams(ctx, rv, headerMeta); err != nil {
+	if err := b.BindHeaderParams(ctx, rv, headerMeta); err != nil {
 		return err
 	}
 	if len(bodyIndex) > 0 {
-		if err := bindBody(ctx, rv, bodyIndex, b.Options); err != nil {
+		if err := b.BindBody(ctx, rv, bodyIndex); err != nil {
 			return err
 		}
 	}
@@ -63,24 +65,25 @@ func (b *DefaultBinder) BindRequest(ctx miniapi.Context, req any) error {
 	return nil
 }
 
-// bindPathParams extracts path parameters and sets them in the struct.
-func bindPathParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMeta) error {
+// BindPathParams extracts path parameters and sets them in the struct.
+// Mandatory validation is deferred to external packages like golangplayground/validator/v10.
+func (b *Binder) BindPathParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMeta) error {
 	for _, m := range meta {
 		val := ctx.RequestParam(m.Tag)
 		if val == "" {
-			continue // Mandatory validation is deferred to external packages
+			continue
 		}
 
 		field := rv.FieldByIndex(m.FieldIndex)
-		if err := setPrimitiveValue(field, val); err != nil {
+		if err := SetPrimitiveValue(field, val); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// bindQueryParams extracts query parameters and sets them in the struct.
-func bindQueryParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMeta) error {
+// BindQueryParams extracts query parameters and sets them in the struct.
+func (b *Binder) BindQueryParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMeta) error {
 	u := ctx.RequestURL()
 	queryValues := u.Query()
 
@@ -92,11 +95,11 @@ func bindQueryParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMe
 
 		field := rv.FieldByIndex(m.FieldIndex)
 		if m.IsSlice {
-			if err := setSliceValue(field, vals); err != nil {
+			if err := SetSliceValue(field, vals); err != nil {
 				return err
 			}
 		} else {
-			if err := setPrimitiveValue(field, vals[0]); err != nil {
+			if err := SetPrimitiveValue(field, vals[0]); err != nil {
 				return err
 			}
 		}
@@ -104,8 +107,8 @@ func bindQueryParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMe
 	return nil
 }
 
-// bindHeaderParams extracts header parameters and sets them in the struct.
-func bindHeaderParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMeta) error {
+// BindHeaderParams extracts header parameters and sets them in the struct.
+func (b *Binder) BindHeaderParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldMeta) error {
 	for _, m := range meta {
 		var vals []string
 
@@ -122,11 +125,11 @@ func bindHeaderParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldM
 
 		field := rv.FieldByIndex(m.FieldIndex)
 		if m.IsSlice {
-			if err := setSliceValue(field, vals); err != nil {
+			if err := SetSliceValue(field, vals); err != nil {
 				return err
 			}
 		} else {
-			if err := setPrimitiveValue(field, vals[0]); err != nil {
+			if err := SetPrimitiveValue(field, vals[0]); err != nil {
 				return err
 			}
 		}
@@ -134,8 +137,9 @@ func bindHeaderParams(ctx miniapi.Context, rv reflect.Value, meta []StructFieldM
 	return nil
 }
 
-// bindBody reads the request body and sets it in the body field.
-func bindBody(ctx miniapi.Context, rv reflect.Value, bodyIndex []int, opts BindingOptions) error {
+// BindBody reads the request body and sets it in the body field.
+func (b *Binder) BindBody(ctx miniapi.Context, rv reflect.Value, bodyIndex []int) error {
+	opts := b.cfg
 	field := rv.FieldByIndex(bodyIndex)
 
 	// If it's a pointer, allocate it if nil
@@ -218,7 +222,7 @@ func bindBody(ctx miniapi.Context, rv reflect.Value, bodyIndex []int, opts Bindi
 
 // MarshalResponse marshals the given response struct into the HTTP response writer
 // based on the Accept header.
-func (b *DefaultBinder) MarshalResponse(ctx miniapi.Context, res any) error {
+func (b *Binder) MarshalResponse(ctx miniapi.Context, res any) error {
 	if res == nil {
 		return nil
 	}
@@ -270,8 +274,8 @@ func (b *DefaultBinder) MarshalResponse(ctx miniapi.Context, res any) error {
 	return nil
 }
 
-// setPrimitiveValue parses the string value into the target primitive reflect.Value.
-func setPrimitiveValue(v reflect.Value, value string) error {
+// SetPrimitiveValue parses the string value into the target primitive reflect.Value.
+func SetPrimitiveValue(v reflect.Value, value string) error {
 	// If it's a pointer, allocate and dereference it
 	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -313,8 +317,8 @@ func setPrimitiveValue(v reflect.Value, value string) error {
 	return nil
 }
 
-// setSliceValue parses a slice of strings into a target slice reflect.Value.
-func setSliceValue(v reflect.Value, values []string) error {
+// SetSliceValue parses a slice of strings into a target slice reflect.Value.
+func SetSliceValue(v reflect.Value, values []string) error {
 	if v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			v.Set(reflect.New(v.Type().Elem()))
@@ -329,7 +333,7 @@ func setSliceValue(v reflect.Value, values []string) error {
 	slice := reflect.MakeSlice(v.Type(), len(values), len(values))
 	for i, val := range values {
 		elem := slice.Index(i)
-		if err := setPrimitiveValue(elem, val); err != nil {
+		if err := SetPrimitiveValue(elem, val); err != nil {
 			return err
 		}
 	}
@@ -342,13 +346,15 @@ type StructFieldMeta struct {
 	Name       string
 	Tag        string
 	Value      string
-	IsSlice    bool
 	FieldIndex []int
+	IsSlice    bool
 }
 
-// extractStructTags inspects the struct type and returns metadata for binding path, query, and header.
+// ExtractStructTags inspects the struct type and returns metadata for binding
+// path, query, and header.
+//
 // It also identifies the field index of the "Body" field if it exists.
-func extractStructTags(t reflect.Type) (pathMeta, queryMeta, headerMeta []StructFieldMeta, bodyIndex []int) {
+func ExtractStructTags(t reflect.Type) (pathMeta, queryMeta, headerMeta []StructFieldMeta, bodyIndex []int) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
