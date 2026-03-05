@@ -16,7 +16,6 @@ type Response struct {
 	Description string
 	Schema      reflect.Type
 	NoContent   bool
-	Default     bool
 }
 
 // TypedHandlerFunc represents a handler function in miniapi.
@@ -25,9 +24,6 @@ type TypedHandlerFunc[Rq, Rp any] func(ctx context.Context, rq *Rq) (*Rp, error)
 // HandlerFunc represents the inner handler function in miniapi.
 // The TypedHandler will be converted as HandlerFunc.
 type HandlerFunc func(ctx Context)
-
-// RouteModifier represents the function type for modifying a route.
-type RouteModifier func(route Route) Route
 
 // Middleware represents the function type for modifying a handler function.
 type Middleware func(HandlerFunc) HandlerFunc
@@ -62,11 +58,55 @@ type Binder interface {
 	MarshalResponse(ctx Context, res any) error
 }
 
-// AuthEngine evaluates an incoming request against the required securities.
-type AuthEngine interface {
-	// Authenticate extracts the token/key, validates it, and either aborts the
-	// request or injects the authenticated user's principal into the context.
-	Authenticate() func(HandlerFunc) HandlerFunc
+// ErrorEncoder represents the function type for encoding an error into the
+// response.
+type ErrorEncoder func(Context, error)
+
+// HandlerFuncBuilder is a function type that builds a HandlerFunc using a
+// Binder and an ErrorEncoder.
+type HandlerFuncBuilder func(b Binder, e ErrorEncoder) HandlerFunc
+
+// Modifier represents the function type for modifying a route builder.
+type Modifier func(route RouteBuilder) RouteBuilder
+
+// RouteBuilder is used for building a route in miniapi.
+type RouteBuilder interface {
+	// Path returns the path of the route builder.
+	Path() string
+	// SetPath sets the path of the route builder.
+	SetPath(path string) RouteBuilder
+	// Method returns the method of the route builder.
+	Method() string
+	// SetMethod sets the method of the route builder.
+	SetMethod(method string) RouteBuilder
+	// Modifiers returns the modifiers of the route builder.
+	Modifiers() []Modifier
+	// AddModifiers adds the given modifiers to the route builder.
+	AddModifiers(modifiers ...Modifier) RouteBuilder
+	// Middlewares returns the middlewares of the route builder.
+	Middlewares() []Middleware
+	// AddMiddlewares adds the given middlewares to the route builder.
+	AddMiddlewares(middlewares ...Middleware) RouteBuilder
+	// Binder returns the binder implementation of the route builder.
+	Binder() Binder
+	// SetBinder sets the binder implementation for the route builder.
+	SetBinder(b Binder) RouteBuilder
+	// Operation returns the operation of the route builder.
+	Operation() Operation
+	// SetOperation sets the operation of the route builder.
+	SetOperation(op Operation) RouteBuilder
+	// Build builds the route with the given specification and typed handler function.
+	Build(extendedMiddlewares []Middleware, extendedModifiers []Modifier) Route
+	// ReqType returns the request reflection type of the route builder.
+	ReqType() reflect.Type
+	// ResType returns the response reflection type of the route builder.
+	ResType() reflect.Type
+	// ErrorEncoder returns the error encoder of the route builder.
+	ErrorEncoder() ErrorEncoder
+	// SetErrorEncoder sets the error encoder for the route builder.
+	SetErrorEncoder(e ErrorEncoder) RouteBuilder
+	// HandlerFuncBuilder returns the handler function builder of the route builder.
+	HandlerFuncBuilder() HandlerFuncBuilder
 }
 
 // Route represents a route in miniapi.
@@ -77,32 +117,8 @@ type Route interface {
 	Method() string
 	// Operation returns the operation of the route.
 	Operation() Operation
-	// SetOperation sets the operation of the route.
-	SetOperation(op Operation)
-	// SetHandleFunc sets the handler function of the route.
-	SetHandleFunc(fn HandlerFunc)
 	// HandlerFunc returns the handler function of the route.
 	HandlerFunc() HandlerFunc
-	// ReqType returns the request reflection type.
-	ReqType() reflect.Type
-	// ResType returns the response reflection type.
-	ResType() reflect.Type
-	// AddModifiers adds the given modifiers to the route.
-	AddModifiers(modifiers ...RouteModifier) Route
-	// SetModifiers sets the modifiers of the route.
-	SetModifiers(modifiers ...RouteModifier) Route
-	// Modifiers returns the modifiers of the route.
-	Modifiers() []RouteModifier
-	// Middlewares returns the middlewares of the route.
-	Middlewares() []Middleware
-	// SetMiddlewares sets the middlewares of the route.
-	SetMiddlewares(middlewares ...Middleware) Route
-	// AddMiddlewares adds the middlewares to the route.
-	AddMiddlewares(middlewares ...Middleware) Route
-	// SetBinder sets the binder implementation for the route.
-	SetBinder(b Binder) Route
-	// Binder returns the binder implementation of the route.
-	Binder() Binder
 }
 
 // Group represents the group of routes in miniapi.
@@ -123,9 +139,9 @@ type Group interface {
 	// Groups returns an iterator of all subgroups in the current group.
 	Groups() iter.Seq[Group]
 	// AddModifiers adds the given modifiers to the group.
-	AddModifiers(modifiers ...RouteModifier) Group
+	AddModifiers(modifiers ...Modifier) Group
 	// Modifiers returns the modifiers of the group.
-	Modifiers() []RouteModifier
+	Modifiers() []Modifier
 	// WithSecurity overrides the global security for this group.
 	WithSecurity(reqs ...SecurityRequirement) Group
 	// Security returns the explicitly set OpenAPI security requirements, or nil.
@@ -187,7 +203,7 @@ type Context interface {
 // OpenAPI represents the OpenAPI specification of the mini API.
 type OpenAPI interface {
 	// Attach attaches the OpenAPI specification to the given group and adapter.
-	Attach(prefix string, group Group, adapter Adapter, moddifiers []RouteModifier, middlewares []Middleware) error
+	Attach(prefix string, group Group, adapter Adapter, moddifiers []Modifier, middlewares []Middleware) error
 	Build(group Group) error
 }
 

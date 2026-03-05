@@ -2,9 +2,11 @@ version: '3'
 
 tasks:
   mock:
-    desc: Generate mocks for the Context interface
+    desc: Generate mocks for interfaces
     cmds:
       - mockery --name=Context --dir=. --output=./mocks --outpkg=mocks
+      - mockery --name=Binder --dir=. --output=./mocks --outpkg=mocks
+      - mockery --name=ErrorEncoder --dir=. --output=./mocks --outpkg=mocks
 
   test:
     desc: Run all tests

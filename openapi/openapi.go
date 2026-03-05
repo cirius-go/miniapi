@@ -83,14 +83,14 @@ func (o *OpenAPI) Build(group miniapi.Group) error {
 }
 
 // Attach implements miniapi.OpenAPI.
-func (o *OpenAPI) Attach(prefix string, group miniapi.Group, adapter miniapi.Adapter, parentModifiers []miniapi.RouteModifier, parentMiddlewares []miniapi.Middleware) error {
+func (o *OpenAPI) Attach(prefix string, group miniapi.Group, adapter miniapi.Adapter, parentModifiers []miniapi.Modifier, parentMiddlewares []miniapi.Middleware) error {
 	var (
 		extendedModifiers   = append(parentModifiers, group.Modifiers()...)
 		extendedMiddlewares = append(parentMiddlewares, group.Middlewares()...)
 	)
 	for route := range group.Routes() {
 		// modify route with modifiers.
-		var modifiers []miniapi.RouteModifier
+		var modifiers []miniapi.Modifier
 		modifiers = append(modifiers, extendedModifiers...)
 		modifiers = append(modifiers, route.Modifiers()...)
 		for _, modifier := range modifiers {
