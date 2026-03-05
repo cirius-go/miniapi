@@ -12,7 +12,7 @@ type Group struct {
 	parent      *Group
 	routes      map[string]miniapi.Route
 	groups      map[string]miniapi.Group
-	modifiers   []miniapi.RouteModifier
+	modifiers   []miniapi.Modifier
 	security    []miniapi.SecurityRequirement
 	middlewares []miniapi.Middleware
 }
@@ -46,13 +46,13 @@ func (g *Group) Security() []miniapi.SecurityRequirement {
 }
 
 // AddModifiers implements miniapi.Group.
-func (g *Group) AddModifiers(modifiers ...miniapi.RouteModifier) miniapi.Group {
+func (g *Group) AddModifiers(modifiers ...miniapi.Modifier) miniapi.Group {
 	g.modifiers = append(g.modifiers, modifiers...)
 	return g
 }
 
 // Modifiers implements miniapi.Group.
-func (g *Group) Modifiers() []miniapi.RouteModifier {
+func (g *Group) Modifiers() []miniapi.Modifier {
 	return g.modifiers
 }
 
@@ -132,7 +132,7 @@ func New(path string) *Group {
 		parent:      nil,
 		groups:      make(map[string]miniapi.Group),
 		routes:      make(map[string]miniapi.Route),
-		modifiers:   make([]miniapi.RouteModifier, 0),
+		modifiers:   make([]miniapi.Modifier, 0),
 		middlewares: make([]miniapi.Middleware, 0),
 		security:    make([]miniapi.SecurityRequirement, 0),
 	}
