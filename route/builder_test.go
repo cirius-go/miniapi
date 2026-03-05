@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/cirius-go/miniapi"
-	"github.com/cirius-go/miniapi/binder"
+	"github.com/cirius-go/miniapi/mocks"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -83,18 +83,23 @@ func TestBuilder(t *testing.T) {
 			So(builderDefault.Operation().ResponseTypes, ShouldBeEmpty)
 			
 			// Build applies the defaults
-			route := builderDefault.Build(nil, nil)
+			route := builderDefault.Build(miniapi.BuildContext{})
 			So(route, ShouldNotBeNil)
 		})
 
 		Convey("It should allow setting Binder and ErrorEncoder", func() {
-			b := binder.New(binder.DefaultConfig())
-			builder.SetBinder(b)
-			So(builder.Binder(), ShouldEqual, b)
+			mockBinder := new(mocks.Binder)
+			builder.SetBinder(mockBinder)
+			So(builder.Binder(), ShouldEqual, mockBinder)
 
-			e := func(c miniapi.Context, err error) {}
-			builder.SetErrorEncoder(e)
+			mockEncoder := func(c miniapi.Context, err error) {}
+			builder.SetErrorEncoder(mockEncoder)
 			So(builder.ErrorEncoder(), ShouldNotBeNil)
+			
+			// Verify they are used during build
+			// Note: resolveHandlerFunc is internal, we check via Build
+			route := builder.Build(miniapi.BuildContext{})
+			So(route, ShouldNotBeNil)
 		})
 
 		Convey("It should allow adding and retrieving middlewares", func() {
@@ -169,7 +174,7 @@ func TestBuilder(t *testing.T) {
 			builder.AddModifiers(mod1)
 			
 			// resolveModifiers should apply existing and provided modifiers
-			resolvedBuilder := builder.resolveModifiers([]miniapi.Modifier{mod2})
+			resolvedBuilder := builder.resolveModifiers(miniapi.BuildContext{Modifiers: []miniapi.Modifier{mod2}})
 			
 			So(resolvedBuilder.Path(), ShouldEqual, "/modified/1")
 			So(resolvedBuilder.Method(), ShouldEqual, http.MethodDelete)

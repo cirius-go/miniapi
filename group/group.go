@@ -1,20 +1,74 @@
 package group
 
 import (
-	"iter"
-
 	"github.com/cirius-go/miniapi"
 )
 
 // Group represents the group of routes in miniapi.
 type Group struct {
-	path        string
-	parent      *Group
-	routes      map[string]miniapi.Route
-	groups      map[string]miniapi.Group
-	modifiers   []miniapi.Modifier
-	security    []miniapi.SecurityRequirement
-	middlewares []miniapi.Middleware
+	prefix       string
+	binder       miniapi.Binder
+	errorEncoder miniapi.ErrorEncoder
+	routes       []miniapi.RouteBuilder
+	groups       []miniapi.Group
+	modifiers    []miniapi.Modifier
+	middlewares  []miniapi.Middleware
+}
+
+// Build implements miniapi.Group.
+func (g *Group) Build(ctx miniapi.BuildContext) []miniapi.Route {
+	ctx = ctx.Clone()
+
+	ctx.Modifiers = append(ctx.Modifiers, g.modifiers...)
+	ctx.Middlewares = append(ctx.Middlewares, g.middlewares...)
+	ctx.Prefix += g.prefix
+
+	if g.binder != nil {
+		ctx.Binder = g.binder
+	}
+	if g.errorEncoder != nil {
+		ctx.ErrorEncoder = g.errorEncoder
+	}
+
+	var compiledRoutes []miniapi.Route
+
+	for _, route := range g.routes {
+		compiledRoutes = append(compiledRoutes, route.Build(ctx))
+	}
+
+	for _, group := range g.groups {
+		compiledRoutes = append(compiledRoutes, group.Build(ctx)...)
+	}
+
+	return compiledRoutes
+}
+
+// Binder implements miniapi.Group.
+func (g *Group) Binder() miniapi.Binder {
+	return g.binder
+}
+
+// ErrorEncoder implements miniapi.Group.
+func (g *Group) ErrorEncoder() miniapi.ErrorEncoder {
+	return g.errorEncoder
+}
+
+// SetBinder implements miniapi.Group.
+func (g *Group) SetBinder(b miniapi.Binder) miniapi.Group {
+	g.binder = b
+	return g
+}
+
+// SetErrorEncoder implements miniapi.Group.
+func (g *Group) SetErrorEncoder(e miniapi.ErrorEncoder) miniapi.Group {
+	g.errorEncoder = e
+	return g
+}
+
+// SetPrefix implements miniapi.Group.
+func (g *Group) SetPrefix(prefix string) miniapi.Group {
+	g.prefix = prefix
+	return g
 }
 
 // AddMiddlewares implements miniapi.Group.
@@ -23,32 +77,27 @@ func (g *Group) AddMiddlewares(middlewares ...miniapi.Middleware) miniapi.Group 
 	return g
 }
 
-// Middlewares implements miniapi.Group.
-func (g *Group) Middlewares() []miniapi.Middleware {
-	return g.middlewares
-}
-
-// SetMiddlewares implements miniapi.Group.
-func (g *Group) SetMiddlewares(middlewares ...miniapi.Middleware) miniapi.Group {
-	g.middlewares = middlewares
-	return g
-}
-
-// WithSecurity overrides the global security for this group.
-func (g *Group) WithSecurity(reqs ...miniapi.SecurityRequirement) miniapi.Group {
-	g.security = reqs
-	return g
-}
-
-// Security returns the explicitly set OpenAPI security requirements, or nil.
-func (g *Group) Security() []miniapi.SecurityRequirement {
-	return g.security
-}
-
 // AddModifiers implements miniapi.Group.
 func (g *Group) AddModifiers(modifiers ...miniapi.Modifier) miniapi.Group {
 	g.modifiers = append(g.modifiers, modifiers...)
 	return g
+}
+
+// AddRoutes implements miniapi.Group.
+func (g *Group) AddRoutes(routes ...miniapi.RouteBuilder) miniapi.Group {
+	g.routes = append(g.routes, routes...)
+	return g
+}
+
+// AddGroups implements miniapi.Group.
+func (g *Group) AddGroups(groups ...miniapi.Group) miniapi.Group {
+	g.groups = append(g.groups, groups...)
+	return g
+}
+
+// Middlewares implements miniapi.Group.
+func (g *Group) Middlewares() []miniapi.Middleware {
+	return g.middlewares
 }
 
 // Modifiers implements miniapi.Group.
@@ -56,84 +105,45 @@ func (g *Group) Modifiers() []miniapi.Modifier {
 	return g.modifiers
 }
 
-// Groups implements miniapi.Group.
-func (g *Group) Groups() iter.Seq[miniapi.Group] {
-	return func(yield func(miniapi.Group) bool) {
-		for _, gr := range g.groups {
-			if !yield(gr) {
-				break
-			}
-		}
-	}
+// NewGroup implements miniapi.Group.
+func (g *Group) NewGroup(prefix string) miniapi.Group {
+	child := New(prefix)
+
+	g.groups = append(g.groups, child)
+	return child
 }
 
-// Routes implements miniapi.Group.
-func (g *Group) Routes() iter.Seq[miniapi.Route] {
-	return func(yield func(miniapi.Route) bool) {
-		for _, r := range g.routes {
-			if !yield(r) {
-				break
-			}
-		}
-	}
+// Prefix implements miniapi.Group.
+func (g *Group) Prefix() string {
+	return g.prefix
 }
 
-// FullPath returns the full path of the current group by concatenating the
-// paths of all parent groups.
-func (g *Group) FullPath() string {
-	var (
-		path    = ""
-		current = g
-	)
-	for current != nil {
-		path = current.Path() + path
-		current = current.parent
-	}
-	return path
-}
+var _ miniapi.Group = (*Group)(nil)
 
-// NewGroup creates a new group with the given path and adds it to the current
-// group.
-// If a group with the same path already exists, it will return the existing
-// group instead of creating a new one.
-func (g *Group) NewGroup(path string) miniapi.Group {
-	if gr, ok := g.groups[path]; ok {
-		return gr
-	}
-	gr := New(path)
-	gr.parent = g
-	g.groups[path] = gr
-	return gr
-}
-
-// AddRoutes adds the given routes to the current group.
-// if a route with the same path and method already exists, it will skip adding
-// new route.
-func (g *Group) AddRoutes(routes ...miniapi.Route) miniapi.Group {
-	for _, r := range routes {
-		key := r.Path() + "__" + r.Method()
-		if _, ok := g.routes[key]; ok {
-			continue
-		}
-		g.routes[key] = r
-	}
-	return g
-}
-
-// Path implements *Group.
-func (g *Group) Path() string {
-	return g.path
+// Spec represents the specification of the group.
+type Spec struct {
+	Binder       miniapi.Binder
+	ErrorEncoder miniapi.ErrorEncoder
+	Routes       []miniapi.RouteBuilder
+	Groups       []miniapi.Group
+	Modifiers    []miniapi.Modifier
+	Middlewares  []miniapi.Middleware
 }
 
 // New creates a new Group.
-func New(path string) *Group {
+func New(prefix string, specs ...Spec) *Group {
+	var spec Spec
+	if len(specs) > 0 {
+		spec = specs[0]
+	}
+
 	return &Group{
-		path:        path,
-		parent:      nil,
-		groups:      make(map[string]miniapi.Group),
-		routes:      make(map[string]miniapi.Route),
-		modifiers:   make([]miniapi.Modifier, 0),
-		middlewares: make([]miniapi.Middleware, 0),
-		security:    make([]miniapi.SecurityRequirement, 0),
+		binder:       spec.Binder,
+		errorEncoder: spec.ErrorEncoder,
+		prefix:       prefix,
+		modifiers:    append([]miniapi.Modifier{}, spec.Modifiers...),
+		middlewares:  append([]miniapi.Middleware{}, spec.Middlewares...),
+		routes:       append([]miniapi.RouteBuilder{}, spec.Routes...),
+		groups:       append([]miniapi.Group{}, spec.Groups...),
 	}
 }

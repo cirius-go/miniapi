@@ -95,8 +95,6 @@ type RouteBuilder interface {
 	Operation() Operation
 	// SetOperation sets the operation of the route builder.
 	SetOperation(op Operation) RouteBuilder
-	// Build builds the route with the given specification and typed handler function.
-	Build(extendedMiddlewares []Middleware, extendedModifiers []Modifier) Route
 	// ReqType returns the request reflection type of the route builder.
 	ReqType() reflect.Type
 	// ResType returns the response reflection type of the route builder.
@@ -107,6 +105,9 @@ type RouteBuilder interface {
 	SetErrorEncoder(e ErrorEncoder) RouteBuilder
 	// HandlerFuncBuilder returns the handler function builder of the route builder.
 	HandlerFuncBuilder() HandlerFuncBuilder
+
+	// Build builds the route with the given specification and typed handler function.
+	Build(ctx BuildContext) Route
 }
 
 // Route represents a route in miniapi.
@@ -123,35 +124,55 @@ type Route interface {
 
 // Group represents the group of routes in miniapi.
 type Group interface {
-	// NewGroup creates a new group with the given path and adds it to the
-	// current group.
-	NewGroup(path string) Group
+	// AddGroups adds the given groups to the current group.
+	AddGroups(groups ...Group) Group
 	// AddRoutes adds the given routes to the current group.
-	AddRoutes(routes ...Route) Group
-	// Path returns the path of the group.
-	Path() string
-	// FullPath returns the full path of the current group by concatenating the
-	// paths of all parent groups.
-	FullPath() string
-	// Routes returns an iterator of all routes in the current group and
-	// its subgroups.
-	Routes() iter.Seq[Route]
-	// Groups returns an iterator of all subgroups in the current group.
-	Groups() iter.Seq[Group]
+	AddRoutes(routes ...RouteBuilder) Group
+	// Prefix returns the prefix of the group.
+	Prefix() string
+	// SetPrefix sets the prefix of the group.
+	SetPrefix(prefix string) Group
 	// AddModifiers adds the given modifiers to the group.
 	AddModifiers(modifiers ...Modifier) Group
 	// Modifiers returns the modifiers of the group.
 	Modifiers() []Modifier
-	// WithSecurity overrides the global security for this group.
-	WithSecurity(reqs ...SecurityRequirement) Group
-	// Security returns the explicitly set OpenAPI security requirements, or nil.
-	Security() []SecurityRequirement
 	// AddMiddlewares adds the middlewares to the group.
 	AddMiddlewares(middlewares ...Middleware) Group
 	// Middlewares returns the middlewares of the group.
 	Middlewares() []Middleware
-	// SetMiddlewares sets the middlewares of the group.
-	SetMiddlewares(middlewares ...Middleware) Group
+	// Binder returns the binder implementation of the group.
+	Binder() Binder
+	// SetBinder sets the binder implementation for the group.
+	SetBinder(b Binder) Group
+	// ErrorEncoder returns the error encoder of the group.
+	ErrorEncoder() ErrorEncoder
+	// SetErrorEncoder sets the error encoder for the group.
+	SetErrorEncoder(e ErrorEncoder) Group
+	// NewGroup creates a new child group with the given prefix and adds it to the current group.
+	NewGroup(prefix string) Group
+	// Build builds the group and returns the list of routes in the group.
+	Build(BuildContext) []Route
+}
+
+// BuildContext represents the context for building the mini API. It can be
+// used to store any information needed during the build process.
+type BuildContext struct {
+	Prefix       string
+	ErrorEncoder ErrorEncoder
+	Binder       Binder
+	Middlewares  []Middleware
+	Modifiers    []Modifier
+}
+
+// Clone clones the build context to avoid modifying the original one when applying modifiers.
+func (ctx BuildContext) Clone() BuildContext {
+	return BuildContext{
+		Prefix:       ctx.Prefix,
+		ErrorEncoder: ctx.ErrorEncoder,
+		Binder:       ctx.Binder,
+		Middlewares:  append([]Middleware{}, ctx.Middlewares...),
+		Modifiers:    append([]Modifier{}, ctx.Modifiers...),
+	}
 }
 
 // Context represents the context of a request in miniapi.

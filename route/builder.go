@@ -4,7 +4,6 @@ import (
 	"reflect"
 
 	"github.com/cirius-go/miniapi"
-	"github.com/cirius-go/miniapi/binder"
 )
 
 // Builder is a helper struct for building routes in miniapi.
@@ -124,8 +123,8 @@ func (h *Builder) clone() *Builder {
 // resolveModifiers applies the modifiers to the route builder and returns the
 // modified route builder. It does pure transform builder, without modifying
 // directly the original one.
-func (h *Builder) resolveModifiers(extendedModifiers []miniapi.Modifier) miniapi.RouteBuilder {
-	modifiers := append([]miniapi.Modifier{}, extendedModifiers...)
+func (h *Builder) resolveModifiers(ctx miniapi.BuildContext) miniapi.RouteBuilder {
+	modifiers := append([]miniapi.Modifier{}, ctx.Modifiers...)
 	modifiers = append(modifiers, h.modifiers...)
 	var routeBuilder miniapi.RouteBuilder = h.clone()
 	for _, mod := range modifiers {
@@ -136,31 +135,29 @@ func (h *Builder) resolveModifiers(extendedModifiers []miniapi.Modifier) miniapi
 
 // resolveHandlerFunc resolves the handler function by applying the middlewares
 // to the handler function built by the route builder.
-func (h *Builder) resolveHandlerFunc(routeBuilder miniapi.RouteBuilder, extendedMiddlewares []miniapi.Middleware) miniapi.HandlerFunc {
-	middlewares := append([]miniapi.Middleware{}, extendedMiddlewares...)
+func (h *Builder) resolveHandlerFunc(routeBuilder miniapi.RouteBuilder, ctx miniapi.BuildContext) miniapi.HandlerFunc {
+	middlewares := append([]miniapi.Middleware{}, ctx.Middlewares...)
 	middlewares = append(middlewares, routeBuilder.Middlewares()...)
-
-	b := routeBuilder.Binder()
-	if b == nil {
-		b = binder.New(binder.DefaultConfig())
+	if routeBuilder.ErrorEncoder() != nil {
+		ctx.ErrorEncoder = routeBuilder.ErrorEncoder()
 	}
-	e := routeBuilder.ErrorEncoder()
-	if e == nil {
-		e = DefaultErrorEncoder
+	if routeBuilder.Binder() != nil {
+		ctx.Binder = routeBuilder.Binder()
 	}
-	handlerFunc := routeBuilder.HandlerFuncBuilder()(b, e)
+	handlerFunc := routeBuilder.HandlerFuncBuilder()(ctx.Binder, ctx.ErrorEncoder)
 	handlerFunc = chain(middlewares, handlerFunc)
 	return handlerFunc
 }
 
 // Build implements miniapi.RouteBuilder.
-func (h *Builder) Build(extendedMiddlewares []miniapi.Middleware, extendedModifiers []miniapi.Modifier) miniapi.Route {
-	routeBuilder := h.resolveModifiers(extendedModifiers)
+func (h *Builder) Build(ctx miniapi.BuildContext) miniapi.Route {
+	ctx = ctx.Clone()
+	routeBuilder := h.resolveModifiers(ctx)
 	return &Route{
-		path:      routeBuilder.Path(),
+		path:      ctx.Prefix + routeBuilder.Path(),
 		method:    routeBuilder.Method(),
 		operation: routeBuilder.Operation(),
-		fn:        h.resolveHandlerFunc(routeBuilder, extendedMiddlewares),
+		fn:        h.resolveHandlerFunc(routeBuilder, ctx),
 	}
 }
 
